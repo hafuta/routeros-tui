@@ -255,15 +255,7 @@ pub fn navigation_tree() -> Vec<NavItem> {
         children: Vec::new(),
     }];
     for group in NAVIGATION {
-        let children = ALL_RESOURCES
-            .iter()
-            .filter(|spec| spec.group == group.id)
-            .map(|spec| NavItem {
-                id: spec.id.to_string(),
-                label: spec.label.to_string(),
-                children: Vec::new(),
-            })
-            .collect();
+        let children = group_children(group.id);
         items.push(NavItem {
             id: group.id.to_string(),
             label: group.label.to_string(),
@@ -271,6 +263,36 @@ pub fn navigation_tree() -> Vec<NavItem> {
         });
     }
     items
+}
+
+/// Children of `group`: entries from [`crate::nav_layout`] first, in layout
+/// order with layout labels, then any unlisted resource in catalog order.
+fn group_children(group: &str) -> Vec<NavItem> {
+    let specs: Vec<&ResourceSpec> = ALL_RESOURCES
+        .iter()
+        .filter(|spec| spec.group == group)
+        .collect();
+    let layout = crate::nav_layout::group_layout(group).unwrap_or(&[]);
+    let mut children: Vec<NavItem> = layout
+        .iter()
+        .filter(|(id, _)| specs.iter().any(|spec| spec.id == *id))
+        .map(|(id, label)| NavItem {
+            id: (*id).to_string(),
+            label: (*label).to_string(),
+            children: Vec::new(),
+        })
+        .collect();
+    children.extend(
+        specs
+            .iter()
+            .filter(|spec| !layout.iter().any(|(id, _)| *id == spec.id))
+            .map(|spec| NavItem {
+                id: spec.id.to_string(),
+                label: spec.label.to_string(),
+                children: Vec::new(),
+            }),
+    );
+    children
 }
 
 #[cfg(test)]

@@ -18,6 +18,7 @@ mod interface_write;
 mod ip_write;
 mod ipsec_write;
 mod ipv6_write;
+mod nav_layout;
 mod ppp_write;
 mod queue_write;
 mod radius_write;
