@@ -6,6 +6,8 @@ use mtui_core::ColumnSpec;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::layout::{clip_line, constrain_lines};
 use crate::styles::Styles;
 
@@ -13,6 +15,10 @@ pub type Row = HashMap<String, String>;
 
 const DEFAULT_VIEWPORT_WIDTH: usize = 80;
 const DEFAULT_VIEWPORT_HEIGHT: usize = 12;
+/// Upper bound for a column widened to fit its content. `ColumnSpec::width`
+/// stays the minimum; a longer value grows the column up to this cap and is
+/// clipped beyond it (the inspector and property sheet show the full value).
+pub const MAX_FIT_COLUMN_WIDTH: usize = 40;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortDir {
@@ -36,6 +42,9 @@ pub struct TableState {
     viewport_height: usize,
     filtered: Vec<usize>,
     checked: HashSet<String>,
+    /// Rendered width per column: `ColumnSpec::width` widened to the longest
+    /// value in `rows`, capped at [`MAX_FIT_COLUMN_WIDTH`].
+    fit_widths: Vec<usize>,
 }
 
 impl TableState {
@@ -55,11 +64,13 @@ impl TableState {
             viewport_height: DEFAULT_VIEWPORT_HEIGHT,
             filtered: Vec::new(),
             checked: HashSet::new(),
+            fit_widths: columns.iter().map(spec_width).collect(),
         }
     }
 
     pub fn set_rows(&mut self, rows: Vec<Row>) {
         self.rows = rows;
+        self.refit_columns();
         self.recompute();
         self.prune_checked();
     }
@@ -279,6 +290,7 @@ impl TableState {
     pub fn header_line(&self, styles: &Styles, width: usize) -> Line<'static> {
         packed_row_line(
             &self.columns,
+            &self.fit_widths,
             self.effective_col_offset(width),
             width,
             |idx, col| {
@@ -306,6 +318,7 @@ impl TableState {
     ) -> Line<'static> {
         let line = packed_row_line(
             &self.columns,
+            &self.fit_widths,
             self.effective_col_offset(width),
             width,
             |_, col| {
@@ -413,12 +426,39 @@ impl TableState {
     }
 
     fn content_width_from(&self, start: usize) -> usize {
-        let cols = self.columns.get(start..).unwrap_or(&[]);
-        if cols.is_empty() {
+        let count = self.columns.len().saturating_sub(start);
+        if count == 0 {
             return 0;
         }
-        let cells: usize = cols.iter().map(|col| usize::from(col.width).max(1)).sum();
-        cells.saturating_add(cols.len().saturating_sub(1).saturating_mul(2))
+        let cells: usize = (start..self.columns.len())
+            .map(|idx| column_width(&self.columns, &self.fit_widths, idx))
+            .sum();
+        cells.saturating_add(count.saturating_sub(1).saturating_mul(2))
+    }
+
+    /// Widen each column to its longest value so names such as
+    /// `ether1 - WAN uplink` are not clipped at the spec width.
+    fn refit_columns(&mut self) {
+        self.fit_widths = self
+            .columns
+            .iter()
+            .map(|col| {
+                let longest = self
+                    .rows
+                    .iter()
+                    .filter_map(|row| row.get(col.key))
+                    .map(|value| value.width())
+                    .max()
+                    .unwrap_or(0);
+                spec_width(col).max(longest.min(MAX_FIT_COLUMN_WIDTH))
+            })
+            .collect();
+    }
+
+    /// Rendered width of column `idx` (spec width widened to fit content).
+    #[must_use]
+    pub fn column_width(&self, idx: usize) -> usize {
+        column_width(&self.columns, &self.fit_widths, idx)
     }
 
     fn reconcile_offsets(&mut self) {
@@ -495,8 +535,26 @@ fn add_clamped(base: usize, delta: isize, max: usize) -> usize {
     usize::try_from(next).unwrap_or(0)
 }
 
+fn spec_width(col: &ColumnSpec) -> usize {
+    usize::from(col.width).max(1)
+}
+
+/// Fitted width for `idx`, falling back to the spec width if `columns` was
+/// replaced without a refit.
+fn column_width(columns: &[ColumnSpec], fit_widths: &[usize], idx: usize) -> usize {
+    let Some(col) = columns.get(idx) else {
+        return 0;
+    };
+    if fit_widths.len() == columns.len() {
+        fit_widths[idx].max(1)
+    } else {
+        spec_width(col)
+    }
+}
+
 fn packed_row_line<F>(
     columns: &[ColumnSpec],
+    fit_widths: &[usize],
     col_offset: usize,
     max_width: usize,
     mut cell_text: F,
@@ -516,7 +574,7 @@ where
             break;
         }
         let available = max_width - used - sep;
-        let col_w = usize::from(col.width).max(1);
+        let col_w = column_width(columns, fit_widths, idx);
         let cell_w = col_w.min(available);
         let (raw, style) = cell_text(idx, col);
         let text = clip_line(&raw, cell_w);
@@ -708,6 +766,58 @@ mod scroll_tests {
         let header = lines_plain(&[state.header_line(&styles(), 10)]);
         assert!(header.contains("Type"), "did not pan to Type: {header}");
         assert!(!header.contains("Name"), "Name stayed after pan: {header}");
+    }
+
+    #[test]
+    fn long_values_widen_the_column_up_to_the_cap() {
+        let mut state = TableState::new(&columns());
+        assert_eq!(state.column_width(0), 10);
+        let mut row = HashMap::new();
+        row.insert("name".into(), "ether1 - WAN fiber uplink".into());
+        row.insert("type".into(), "ether".into());
+        state.set_rows(vec![row]);
+        assert_eq!(state.column_width(0), "ether1 - WAN fiber uplink".len());
+        assert_eq!(state.column_width(1), 8, "short values keep the spec width");
+
+        state.sync_viewport(80, 4);
+        let view = lines_plain(&state.lines(&styles(), 80, 4, "empty"));
+        assert!(
+            view.contains("ether1 - WAN fiber uplink"),
+            "name clipped: {view}"
+        );
+
+        let mut long = HashMap::new();
+        long.insert("name".into(), "x".repeat(MAX_FIT_COLUMN_WIDTH + 20));
+        state.set_rows(vec![long]);
+        assert_eq!(state.column_width(0), MAX_FIT_COLUMN_WIDTH);
+    }
+
+    #[test]
+    fn refit_shrinks_back_when_long_rows_leave() {
+        let mut state = TableState::new(&columns());
+        let mut long = HashMap::new();
+        long.insert("name".into(), "a-very-long-interface-name".into());
+        state.set_rows(vec![long]);
+        assert!(state.column_width(0) > 10);
+        state.set_rows(rows(2));
+        assert_eq!(state.column_width(0), 10);
+    }
+
+    #[test]
+    fn wide_fitted_column_still_pans_on_a_narrow_pane() {
+        let mut state = TableState::new(&columns());
+        let mut row = HashMap::new();
+        row.insert("name".into(), "n".repeat(30));
+        row.insert("type".into(), "ether".into());
+        state.set_rows(vec![row]);
+        state.sync_viewport(20, 4);
+        assert!(state.can_scroll_columns(1));
+        state.scroll_columns_end();
+        let header = lines_plain(&[state.header_line(&styles(), 20)]);
+        assert!(
+            header.contains("Extra"),
+            "end did not reach Extra: {header}"
+        );
     }
 
     #[test]
