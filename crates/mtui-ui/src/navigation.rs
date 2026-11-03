@@ -52,6 +52,7 @@ pub fn flatten_nav_filtered(
     let view = NavView {
         expanded,
         expanded_section: None,
+        tabs: false,
         hidden,
         unavailable,
         show_hidden,
@@ -63,6 +64,8 @@ pub fn flatten_nav_filtered(
 struct NavView<'a> {
     expanded: Option<&'a str>,
     expanded_section: Option<&'a str>,
+    /// Sections render as one row; their screens are tabs in the content pane.
+    tabs: bool,
     hidden: &'a HashSet<String>,
     unavailable: &'a HashMap<String, String>,
     show_hidden: bool,
@@ -117,12 +120,12 @@ impl NavView<'_> {
             if available.is_empty() || user_concealed(section_hidden, self.show_hidden) {
                 continue;
             }
-            let is_expanded = self.expanded_section == Some(child.id.as_str());
+            let is_expanded = !self.tabs && self.expanded_section == Some(child.id.as_str());
             out.push(FlatNavEntry {
                 id: child.id.clone(),
                 label: child.label.clone(),
                 depth: 1,
-                is_group: true,
+                is_group: !self.tabs,
                 expanded: is_expanded,
                 hidden: section_hidden,
                 unavailable: false,
@@ -274,6 +277,8 @@ pub struct NavState {
     pub expanded: Option<String>,
     /// Open section inside `expanded`, when the tree has sections.
     pub expanded_section: Option<String>,
+    /// Sections are single rows whose screens open as content tabs.
+    pub tabs: bool,
     pub hidden: HashSet<String>,
     pub unavailable: HashMap<String, String>,
     pub show_hidden: bool,
@@ -290,6 +295,7 @@ impl NavState {
             selected: 0,
             expanded: None,
             expanded_section: None,
+            tabs: false,
             hidden: HashSet::new(),
             unavailable: HashMap::new(),
             show_hidden: false,
@@ -303,10 +309,23 @@ impl NavState {
     /// Swap the tree (for example between flat and sectioned layouts) and
     /// keep the cursor on the same screen when it still exists.
     pub fn set_tree(&mut self, items: &[NavItem]) {
-        let selected = self.selected_id().map(str::to_owned);
+        self.set_layout(items, false);
+    }
+
+    /// Like [`Self::set_tree`], also choosing whether sections show as
+    /// content tabs (one sidebar row per section) instead of submenus.
+    pub fn set_layout(&mut self, items: &[NavItem], tabs: bool) {
+        let mut selected = self.selected_id().map(str::to_owned);
+        if self.tabs
+            && let Some(id) = selected.as_deref()
+            && is_section(&self.tree, id)
+        {
+            selected = self.open_target(id);
+        }
         let cursor_on_section = selected
             .as_deref()
             .is_some_and(|id| is_section(&self.tree, id));
+        self.tabs = tabs;
         self.tree = items.to_vec();
         self.expanded_section = None;
         if self
@@ -344,6 +363,7 @@ impl NavState {
         let view = NavView {
             expanded: self.expanded.as_deref(),
             expanded_section: self.expanded_section.as_deref(),
+            tabs: self.tabs,
             hidden: &self.hidden,
             unavailable: &self.unavailable,
             show_hidden: self.show_hidden,
@@ -655,9 +675,71 @@ impl NavState {
         let expanded = (leaf_path.len() > 1).then(|| leaf_path[0].id.clone());
         let expanded_section = (leaf_path.len() > 2).then(|| leaf_path[1].id.clone());
         self.expanded = expanded;
+        if self.tabs {
+            // The section row stands for every tab inside it.
+            self.expanded_section = None;
+            self.rebuild();
+            return match expanded_section {
+                Some(section) => self.focus_row(&section),
+                None => self.focus_row(&leaf_id),
+            };
+        }
         self.expanded_section = expanded_section;
         self.rebuild();
         self.focus_row(&leaf_id)
+    }
+
+    /// Screen to open for sidebar row `id`: a section opens its first visible
+    /// screen, anything else opens itself.
+    #[must_use]
+    pub fn open_target(&self, id: &str) -> Option<String> {
+        let item = find(&self.tree, id)?;
+        if item.children.is_empty() {
+            return Some(item.id.clone());
+        }
+        leaves(item)
+            .into_iter()
+            .find(|leaf| {
+                !self.unavailable.contains_key(&leaf.id)
+                    && (self.show_hidden || !self.hidden.contains(&leaf.id))
+            })
+            .map(|leaf| leaf.id.clone())
+    }
+
+    /// Sidebar row that represents screen `id`: its section in tab mode,
+    /// otherwise the screen itself.
+    #[must_use]
+    pub fn row_for<'a>(&'a self, id: &'a str) -> &'a str {
+        if !self.tabs {
+            return id;
+        }
+        path_to(&self.tree, id)
+            .filter(|path| path.len() > 2)
+            .map_or(id, |path| path[path.len() - 2].id.as_str())
+    }
+
+    /// Tabs shown above screen `id` in tab mode: `(id, label)` for every
+    /// visible screen of its section. `None` outside a section or tab mode.
+    #[must_use]
+    pub fn tabs_for(&self, id: &str) -> Option<Vec<(String, String)>> {
+        if !self.tabs {
+            return None;
+        }
+        let path = path_to(&self.tree, id)?;
+        if path.len() < 3 {
+            return None;
+        }
+        let section = path[path.len() - 2];
+        let tabs: Vec<(String, String)> = section
+            .children
+            .iter()
+            .filter(|leaf| {
+                !self.unavailable.contains_key(&leaf.id)
+                    && (leaf.id == id || self.show_hidden || !self.hidden.contains(&leaf.id))
+            })
+            .map(|leaf| (leaf.id.clone(), leaf.label.clone()))
+            .collect();
+        Some(tabs)
     }
 
     /// Build styled lines for every visible row.
@@ -1543,6 +1625,56 @@ mod section_tests {
         state.selected = idx;
         state.set_tree(&flat());
         assert_eq!(state.selected_id(), Some("ip-group"));
+    }
+
+    #[test]
+    fn tab_layout_shows_sections_as_single_rows() {
+        let mut state = NavState::new(&[]);
+        state.set_layout(&sectioned(), true);
+        assert!(state.select_id("firewall-nat"));
+        assert_eq!(state.selected_id(), Some("ip-group/firewall"));
+        assert!(state.expanded_section.is_none());
+        let row = &state.entries[state.selected];
+        assert!(!row.is_group);
+        assert!(state.entries.iter().all(|e| e.depth < 2));
+        assert_eq!(state.row_for("firewall-nat"), "ip-group/firewall");
+        assert_eq!(state.row_for("addresses"), "addresses");
+        assert_eq!(
+            state.open_target("ip-group/firewall").as_deref(),
+            Some("firewall-filter")
+        );
+        let tabs = state.tabs_for("firewall-nat").expect("tabs");
+        assert_eq!(
+            tabs.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>(),
+            ["Filter Rules", "NAT"]
+        );
+        assert!(state.tabs_for("addresses").is_none());
+    }
+
+    #[test]
+    fn tab_layout_skips_hidden_tabs_and_keeps_the_open_one() {
+        let mut state = NavState::new(&[]);
+        state.set_layout(&sectioned(), true);
+        state.select_id("ip-group");
+        state.toggle_hidden("firewall-filter");
+        assert_eq!(
+            state.open_target("ip-group/firewall").as_deref(),
+            Some("firewall-nat")
+        );
+        let tabs = state.tabs_for("firewall-nat").expect("tabs");
+        assert_eq!(tabs.len(), 1);
+        let tabs = state.tabs_for("firewall-filter").expect("tabs");
+        assert_eq!(tabs.len(), 2, "the screen on display keeps its tab");
+    }
+
+    #[test]
+    fn leaving_tab_layout_from_a_section_row_keeps_its_screen() {
+        let mut state = NavState::new(&[]);
+        state.set_layout(&sectioned(), true);
+        state.select_id("firewall-nat");
+        state.set_layout(&flat(), false);
+        assert_eq!(state.selected_id(), Some("firewall-filter"));
+        assert!(!state.tabs);
     }
 
     #[test]

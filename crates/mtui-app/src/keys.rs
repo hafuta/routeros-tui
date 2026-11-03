@@ -417,8 +417,24 @@ impl App {
                 return Vec::new();
             }
             KeyCode::Char('=') if self.pane == Pane::Nav && !self.status.starts_with("Filter:") => {
-                self.toggle_nav_sections();
+                self.cycle_nav_layout();
                 return Vec::new();
+            }
+            KeyCode::Char('<')
+                if self.pane != Pane::Console
+                    && self.pane != Pane::Terminal
+                    && !self.status.starts_with("Filter:")
+                    && self.nav.tabs_for(&self.current_resource).is_some() =>
+            {
+                return self.switch_content_tab(-1);
+            }
+            KeyCode::Char('>')
+                if self.pane != Pane::Console
+                    && self.pane != Pane::Terminal
+                    && !self.status.starts_with("Filter:")
+                    && self.nav.tabs_for(&self.current_resource).is_some() =>
+            {
+                return self.switch_content_tab(1);
             }
             KeyCode::Char('-') if self.pane == Pane::Nav && !self.status.starts_with("Filter:") => {
                 self.toggle_selected_nav_hidden();
@@ -516,7 +532,8 @@ impl App {
                 if self.pane == Pane::Nav
                     && let Some(id) = self.nav.selected_id().map(str::to_owned)
                     && self.nav.select_id(&id)
-                    && let Some(open_id) = self.nav.selected_id().map(str::to_owned)
+                    && let Some(row) = self.nav.selected_id().map(str::to_owned)
+                    && let Some(open_id) = self.nav_open_target(&row)
                 {
                     return self.open_resource(&open_id);
                 }
@@ -1438,7 +1455,10 @@ impl App {
         if !self.nav.select_id(&id) {
             return Vec::new();
         }
-        let Some(open_id) = self.nav.selected_id().map(str::to_owned) else {
+        let Some(row) = self.nav.selected_id().map(str::to_owned) else {
+            return Vec::new();
+        };
+        let Some(open_id) = self.nav_open_target(&row) else {
             return Vec::new();
         };
         if open_id == self.current_resource {
@@ -1624,8 +1644,8 @@ impl App {
                 self.reset_hidden_menus();
                 Vec::new()
             }
-            "toggle-nav-sections" => {
-                self.toggle_nav_sections();
+            "cycle-nav-layout" => {
+                self.cycle_nav_layout();
                 Vec::new()
             }
             "dashboard" => self.open_resource(DASHBOARD_ID),
@@ -2558,10 +2578,11 @@ mod nav_accordion_tests {
     }
 
     #[test]
-    fn equals_toggles_nested_sections_and_enter_opens_a_section() {
+    fn equals_cycles_layouts_and_enter_opens_a_section() {
+        use mtui_config::NavLayout;
         let mut app = main_app();
         let _ = app.update(AppEvent::Input(press(KeyCode::Char('='))));
-        assert!(app.nav_sections);
+        assert_eq!(app.nav_layout, NavLayout::Sections);
         assert!(app.status.contains("nested"), "{}", app.status);
 
         assert!(app.nav.select_id("ip-group"));
@@ -2581,9 +2602,68 @@ mod nav_accordion_tests {
 
         app.pane = Pane::Nav;
         let _ = app.update(AppEvent::Input(press(KeyCode::Char('='))));
-        assert!(!app.nav_sections);
+        assert_eq!(app.nav_layout, NavLayout::Tabs);
+        assert_eq!(app.nav.selected_id(), Some("ip-group/firewall"));
+        assert!(
+            app.nav
+                .entries
+                .iter()
+                .all(|entry| entry.id != "firewall-nat")
+        );
+
+        let _ = app.update(AppEvent::Input(press(KeyCode::Char('='))));
+        assert_eq!(app.nav_layout, NavLayout::Flat);
         assert_eq!(app.nav.selected_id(), Some("firewall-filter"));
         assert!(app.nav.entries.iter().all(|entry| !entry.id.contains('/')));
+    }
+
+    #[test]
+    fn tab_layout_opens_sections_and_switches_tabs() {
+        use mtui_config::NavLayout;
+        let mut app = main_app();
+        for _ in 0..2 {
+            let _ = app.update(AppEvent::Input(press(KeyCode::Char('='))));
+        }
+        assert_eq!(app.nav_layout, NavLayout::Tabs);
+
+        assert!(app.nav.select_id("ip-group"));
+        let firewall = app
+            .nav
+            .entries
+            .iter()
+            .position(|entry| entry.id == "ip-group/firewall")
+            .expect("firewall row");
+        assert!(!app.nav.entries[firewall].is_group);
+        app.nav.selected = firewall;
+        let _ = app.update(AppEvent::Input(press(KeyCode::Enter)));
+        assert_eq!(app.current_resource, "firewall-filter");
+        let tabs = app.nav.tabs_for("firewall-filter").expect("tabs");
+        assert_eq!(tabs[1].1, "NAT");
+
+        let _ = app.update(AppEvent::Input(press(KeyCode::Char('>'))));
+        assert_eq!(app.current_resource, "firewall-nat");
+        assert_eq!(app.nav.selected_id(), Some("ip-group/firewall"));
+        assert_eq!(app.nav.row_for("firewall-nat"), "ip-group/firewall");
+
+        let _ = app.update(AppEvent::Input(press(KeyCode::Char('<'))));
+        let _ = app.update(AppEvent::Input(press(KeyCode::Char('<'))));
+        assert_eq!(
+            app.current_resource,
+            tabs.last().expect("last tab").0,
+            "< wraps to the last tab"
+        );
+
+        // Enter on the section row keeps the tab already on screen.
+        app.pane = Pane::Nav;
+        let shown = app.current_resource.clone();
+        let _ = app.update(AppEvent::Input(press(KeyCode::Enter)));
+        assert_eq!(app.current_resource, shown);
+
+        // Screens outside a section have no tabs; < and > do nothing.
+        let _ = app.open_resource("addresses");
+        assert!(app.nav.tabs_for("addresses").is_none());
+        let _ = app.update(AppEvent::Input(press(KeyCode::Char('>'))));
+        assert_eq!(app.current_resource, "addresses");
     }
 
     #[test]

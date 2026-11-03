@@ -323,6 +323,9 @@ impl App {
                 hints.push((".".into(), "hidden".into()));
             }
         }
+        if self.nav.tabs_for(&self.current_resource).is_some() {
+            hints.push(("< >".into(), "tabs".into()));
+        }
         if !self.session_ready() {
             hints.push(("r".into(), "reconnect".into()));
         } else if self.resource_actions_allowed() {

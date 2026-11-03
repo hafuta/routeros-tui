@@ -7,6 +7,7 @@ mod charts;
 mod chrome;
 mod color;
 mod console;
+mod content_tabs;
 mod dashboard;
 mod file_picker;
 mod firewall;
@@ -38,6 +39,7 @@ pub use chrome::{
 };
 pub use color::ColorDepth;
 pub use console::{ConsoleEntry, ConsoleLevel, ConsoleState, TIME_COL, console_pane_height};
+pub use content_tabs::content_tab_line;
 pub use dashboard::{CpuCoreView, DashboardGeometry, DashboardView, dashboard_content};
 pub use file_picker::{FilePickerEntry, FilePickerKind, FilePickerState, render_file_picker};
 pub use firewall::{FirewallHitChart, FirewallRuleMetric, MAX_FIREWALL_RULES};

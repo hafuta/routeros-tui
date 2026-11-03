@@ -112,8 +112,8 @@ pub struct Session {
     pub(crate) last_safe_mode_verb: Option<SafeModeVerb>,
     pub(crate) safe_mode_after: SafeModeAfter,
     pub(crate) installed_packages: HashSet<String>,
-    /// Sidebar uses the three-level sectioned layout.
-    pub(crate) nav_sections: bool,
+    /// Sidebar layout: flat, nested sections, or section tabs.
+    pub(crate) nav_layout: mtui_config::NavLayout,
     pub(crate) missing_path_ids: HashSet<String>,
     pub(crate) menu_paths_generation: u64,
 }
@@ -182,7 +182,7 @@ impl Session {
             last_safe_mode_verb: None,
             safe_mode_after: SafeModeAfter::None,
             installed_packages: HashSet::new(),
-            nav_sections: false,
+            nav_layout: mtui_config::NavLayout::Flat,
             missing_path_ids: HashSet::new(),
             menu_paths_generation: 0,
         }
