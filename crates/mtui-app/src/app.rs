@@ -12,7 +12,8 @@ use mtui_config::{
 use mtui_core::{
     ALL_RESOURCES, DASHBOARD_ID, MISSING_PATH_REASON, ResourceSpec, ThemeRegistry, ThemeSet,
     edit_resource_for_interface_type, installed_package_names, is_missing_command_prefix,
-    merge_unavailable_menus, resource_by_id, unavailable_menus_for_device,
+    merge_unavailable_menus, navigation_tree, navigation_tree_sectioned, resource_by_id,
+    unavailable_menus_for_device,
 };
 
 use mtui_routeros::{
@@ -685,6 +686,7 @@ impl App {
             self.theme = ThemeSet::from_theme(self.themes.active().as_ref());
         }
         self.nav.set_hidden_ids(profile.hidden_nav_ids());
+        self.apply_nav_layout(profile.nav_sections());
         self.rebuild_palette();
         if profile.certificate_fingerprint.is_empty() {
             self.saved_fingerprint = None;
@@ -1110,6 +1112,7 @@ impl App {
         self.login.uses_totp = profile.uses_totp;
         profile.set_theme_id(self.theme.id.as_str());
         profile.set_hidden_nav_ids(self.nav.hidden.iter().cloned());
+        profile.set_nav_sections(self.nav_sections);
         if self.profiles.upsert(profile).is_err() {
             self.status = "Connected · profile could not be saved".into();
             return;
@@ -2607,6 +2610,34 @@ impl App {
         }
     }
 
+    /// Switch the sidebar between the flat layout and nested sections.
+    fn apply_nav_layout(&mut self, sections: bool) {
+        self.nav_sections = sections;
+        let tree = if sections {
+            navigation_tree_sectioned()
+        } else {
+            navigation_tree()
+        };
+        self.nav.set_tree(&tree);
+    }
+
+    pub(crate) fn toggle_nav_sections(&mut self) {
+        self.apply_nav_layout(!self.nav_sections);
+        self.status = if self.nav_sections {
+            "Menu: nested sections · = flat".into()
+        } else {
+            "Menu: flat · = nested sections".into()
+        };
+        if cfg!(test) {
+            return;
+        }
+        let Some(mut profile) = self.named_profile() else {
+            return;
+        };
+        profile.set_nav_sections(self.nav_sections);
+        let _ = self.profiles.upsert(profile);
+    }
+
     pub(crate) fn reset_hidden_menus(&mut self) {
         self.nav.set_hidden_ids(Vec::new());
         self.nav.set_show_hidden(false);
@@ -2648,6 +2679,8 @@ fn palette_commands_filtered(
             .with_description("reveal tucked-away sidebar items so they can be restored"),
         Command::new("reset-hidden-menus", "Restore all menus")
             .with_description("put every hidden sidebar item back"),
+        Command::new("toggle-nav-sections", "Toggle nested menus")
+            .with_description("group related screens under sections (IP › Firewall › NAT)"),
         Command::new("dashboard", "Dashboard").with_description("live WAN overview"),
         Command::new("safe-mode", "Toggle Safe Mode").with_description(
             "take or release Safe Mode on this tab so a dropped session unrolls edits",

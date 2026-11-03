@@ -265,6 +265,21 @@ pub fn navigation_tree() -> Vec<NavItem> {
     items
 }
 
+/// Navigation tree with a third level: related screens inside a category
+/// are grouped under section rows (IP › Firewall › NAT). See
+/// [`crate::nav_layout::into_sections`].
+#[must_use]
+pub fn navigation_tree_sectioned() -> Vec<NavItem> {
+    navigation_tree()
+        .into_iter()
+        .map(|mut item| {
+            let children = std::mem::take(&mut item.children);
+            item.children = crate::nav_layout::into_sections(&item.id, children);
+            item
+        })
+        .collect()
+}
+
 /// Children of `group`: entries from [`crate::nav_layout`] first, in layout
 /// order with layout labels, then any unlisted resource in catalog order.
 fn group_children(group: &str) -> Vec<NavItem> {

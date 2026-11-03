@@ -1,4 +1,10 @@
 //! Navigation tree state and rendering.
+//!
+//! The tree has top-level rows (dashboard and categories) and, under a
+//! category, either screens or sections. A section is an optional third
+//! level that groups related screens (IP › Firewall › NAT). Hiding always
+//! records screen and category ids, never section ids, so hidden menus stay
+//! the same whether sections are shown or not.
 
 use std::collections::{HashMap, HashSet};
 
@@ -43,71 +49,172 @@ pub fn flatten_nav_filtered(
     unavailable: &HashMap<String, String>,
     show_hidden: bool,
 ) -> Vec<FlatNavEntry> {
-    let mut out = Vec::new();
-    for item in items {
-        let group_hidden = hidden.contains(&item.id);
-        let group_unavailable = unavailable.contains_key(&item.id);
-        if group_unavailable {
-            continue;
-        }
-        if user_concealed(group_hidden, show_hidden) {
-            continue;
-        }
-        let is_group = !item.children.is_empty();
-        let visible_children = item
-            .children
-            .iter()
-            .filter(|child| {
-                !unavailable.contains_key(&child.id)
-                    && !user_concealed(hidden.contains(&child.id), show_hidden)
-            })
-            .count();
-        if is_group && visible_children == 0 && !group_hidden {
-            continue;
-        }
-        let is_expanded = is_group && expanded == Some(item.id.as_str());
-        out.push(FlatNavEntry {
-            id: item.id.clone(),
-            label: item.label.clone(),
-            depth: 0,
-            is_group,
-            expanded: is_expanded,
-            hidden: group_hidden,
-            unavailable: group_unavailable,
-            badge: unavailable.get(&item.id).cloned(),
-        });
-        if !is_expanded {
-            continue;
-        }
-        for child in &item.children {
-            let child_hidden = hidden.contains(&child.id) || group_hidden;
-            let child_unavailable = unavailable.contains_key(&child.id);
-            if child_unavailable {
+    let view = NavView {
+        expanded,
+        expanded_section: None,
+        hidden,
+        unavailable,
+        show_hidden,
+    };
+    view.flatten(items)
+}
+
+/// Inputs shared by every flatten step.
+struct NavView<'a> {
+    expanded: Option<&'a str>,
+    expanded_section: Option<&'a str>,
+    hidden: &'a HashSet<String>,
+    unavailable: &'a HashMap<String, String>,
+    show_hidden: bool,
+}
+
+impl NavView<'_> {
+    fn flatten(&self, items: &[NavItem]) -> Vec<FlatNavEntry> {
+        let mut out = Vec::new();
+        for item in items {
+            let group_hidden = self.hidden.contains(&item.id);
+            if self.unavailable.contains_key(&item.id) {
                 continue;
             }
-            if user_concealed(child_hidden, show_hidden) {
+            if user_concealed(group_hidden, self.show_hidden) {
                 continue;
             }
+            let is_group = !item.children.is_empty();
+            if is_group && !group_hidden && self.visible_leaves(item) == 0 {
+                continue;
+            }
+            let is_expanded = is_group && self.expanded == Some(item.id.as_str());
+            out.push(FlatNavEntry {
+                id: item.id.clone(),
+                label: item.label.clone(),
+                depth: 0,
+                is_group,
+                expanded: is_expanded,
+                hidden: group_hidden,
+                unavailable: false,
+                badge: None,
+            });
+            if is_expanded {
+                self.push_children(&mut out, item, group_hidden);
+            }
+        }
+        out
+    }
+
+    fn push_children(&self, out: &mut Vec<FlatNavEntry>, group: &NavItem, group_hidden: bool) {
+        for child in &group.children {
+            if child.children.is_empty() {
+                self.push_leaf(out, child, 1, group_hidden, &group.id);
+                continue;
+            }
+            // Section: hidden when every screen in it is hidden.
+            let available = leaves(child)
+                .into_iter()
+                .filter(|leaf| !self.unavailable.contains_key(&leaf.id))
+                .collect::<Vec<_>>();
+            let section_hidden =
+                group_hidden || available.iter().all(|leaf| self.hidden.contains(&leaf.id));
+            if available.is_empty() || user_concealed(section_hidden, self.show_hidden) {
+                continue;
+            }
+            let is_expanded = self.expanded_section == Some(child.id.as_str());
             out.push(FlatNavEntry {
                 id: child.id.clone(),
                 label: child.label.clone(),
                 depth: 1,
-                is_group: false,
-                expanded: false,
-                hidden: child_hidden,
-                unavailable: child_unavailable,
-                badge: unavailable
-                    .get(&child.id)
-                    .cloned()
-                    .or_else(|| unavailable.get(&item.id).cloned()),
+                is_group: true,
+                expanded: is_expanded,
+                hidden: section_hidden,
+                unavailable: false,
+                badge: None,
             });
+            if is_expanded {
+                for leaf in &child.children {
+                    self.push_leaf(out, leaf, 2, group_hidden, &group.id);
+                }
+            }
         }
     }
-    out
+
+    fn push_leaf(
+        &self,
+        out: &mut Vec<FlatNavEntry>,
+        leaf: &NavItem,
+        depth: usize,
+        group_hidden: bool,
+        group_id: &str,
+    ) {
+        let leaf_hidden = self.hidden.contains(&leaf.id) || group_hidden;
+        if self.unavailable.contains_key(&leaf.id) {
+            return;
+        }
+        if user_concealed(leaf_hidden, self.show_hidden) {
+            return;
+        }
+        out.push(FlatNavEntry {
+            id: leaf.id.clone(),
+            label: leaf.label.clone(),
+            depth,
+            is_group: false,
+            expanded: false,
+            hidden: leaf_hidden,
+            unavailable: false,
+            badge: self
+                .unavailable
+                .get(&leaf.id)
+                .cloned()
+                .or_else(|| self.unavailable.get(group_id).cloned()),
+        });
+    }
+
+    /// Screens under `item` that are neither unavailable nor (unless showing
+    /// hidden rows) hidden.
+    fn visible_leaves(&self, item: &NavItem) -> usize {
+        leaves(item)
+            .into_iter()
+            .filter(|leaf| {
+                !self.unavailable.contains_key(&leaf.id)
+                    && !user_concealed(self.hidden.contains(&leaf.id), self.show_hidden)
+            })
+            .count()
+    }
 }
 
 fn user_concealed(tucked: bool, show_hidden: bool) -> bool {
     tucked && !show_hidden
+}
+
+/// Every screen (leaf) under `item`, in tree order. A leaf returns itself.
+fn leaves(item: &NavItem) -> Vec<&NavItem> {
+    if item.children.is_empty() {
+        return vec![item];
+    }
+    item.children.iter().flat_map(leaves).collect()
+}
+
+/// Path of ids from a top-level row down to `id`, inclusive.
+fn path_to<'a>(items: &'a [NavItem], id: &str) -> Option<Vec<&'a NavItem>> {
+    for item in items {
+        if item.id == id {
+            return Some(vec![item]);
+        }
+        if let Some(mut rest) = path_to(&item.children, id) {
+            rest.insert(0, item);
+            return Some(rest);
+        }
+    }
+    None
+}
+
+fn find<'a>(items: &'a [NavItem], id: &str) -> Option<&'a NavItem> {
+    path_to(items, id).and_then(|path| path.last().copied())
+}
+
+/// Sections are rows with children below the top level. They are not stored
+/// in the hidden set; hiding one hides its screens.
+fn is_section(items: &[NavItem], id: &str) -> bool {
+    path_to(items, id)
+        .is_some_and(|path| path.len() > 1 && !path[path.len() - 1].children.is_empty())
 }
 
 fn collapse_empty_groups(items: &[NavItem], hidden: &mut HashSet<String>) {
@@ -115,7 +222,7 @@ fn collapse_empty_groups(items: &[NavItem], hidden: &mut HashSet<String>) {
         if item.children.is_empty() || hidden.contains(&item.id) {
             continue;
         }
-        if item.children.iter().all(|child| hidden.contains(&child.id)) {
+        if leaves(item).iter().all(|leaf| hidden.contains(&leaf.id)) {
             hidden.insert(item.id.clone());
             clear_hidden_children(item, hidden);
         }
@@ -127,6 +234,7 @@ fn collapse_empty_groups(items: &[NavItem], hidden: &mut HashSet<String>) {
 fn clear_hidden_children(item: &NavItem, hidden: &mut HashSet<String>) {
     for child in &item.children {
         hidden.remove(&child.id);
+        clear_hidden_children(child, hidden);
     }
 }
 
@@ -146,13 +254,11 @@ fn visible_leaf_count(
         .map(|item| {
             if hidden.contains(&item.id) || unavailable.contains_key(&item.id) {
                 0
-            } else if item.children.is_empty() {
-                1
             } else {
-                item.children
-                    .iter()
-                    .filter(|child| {
-                        !hidden.contains(&child.id) && !unavailable.contains_key(&child.id)
+                leaves(item)
+                    .into_iter()
+                    .filter(|leaf| {
+                        !hidden.contains(&leaf.id) && !unavailable.contains_key(&leaf.id)
                     })
                     .count()
             }
@@ -166,6 +272,8 @@ pub struct NavState {
     pub entries: Vec<FlatNavEntry>,
     pub selected: usize,
     pub expanded: Option<String>,
+    /// Open section inside `expanded`, when the tree has sections.
+    pub expanded_section: Option<String>,
     pub hidden: HashSet<String>,
     pub unavailable: HashMap<String, String>,
     pub show_hidden: bool,
@@ -181,6 +289,7 @@ impl NavState {
             entries: Vec::new(),
             selected: 0,
             expanded: None,
+            expanded_section: None,
             hidden: HashSet::new(),
             unavailable: HashMap::new(),
             show_hidden: false,
@@ -191,14 +300,55 @@ impl NavState {
         state
     }
 
+    /// Swap the tree (for example between flat and sectioned layouts) and
+    /// keep the cursor on the same screen when it still exists.
+    pub fn set_tree(&mut self, items: &[NavItem]) {
+        let selected = self.selected_id().map(str::to_owned);
+        let cursor_on_section = selected
+            .as_deref()
+            .is_some_and(|id| is_section(&self.tree, id));
+        self.tree = items.to_vec();
+        self.expanded_section = None;
+        if self
+            .expanded
+            .as_deref()
+            .is_some_and(|id| find(&self.tree, id).is_none())
+        {
+            self.expanded = None;
+        }
+        self.rebuild();
+        let Some(id) = selected else {
+            return;
+        };
+        if cursor_on_section || find(&self.tree, &id).is_none() {
+            if let Some(group) = self.expanded.clone() {
+                let _ = self.focus_row(&group);
+            }
+            return;
+        }
+        let _ = self.select_id(&id);
+    }
+
+    fn focus_row(&mut self, id: &str) -> bool {
+        match self.entries.iter().position(|entry| entry.id == id) {
+            Some(idx) => {
+                self.selected = idx;
+                self.ensure_selection_visible();
+                true
+            }
+            None => false,
+        }
+    }
+
     fn rebuild(&mut self) {
-        self.entries = flatten_nav_filtered(
-            &self.tree,
-            self.expanded.as_deref(),
-            &self.hidden,
-            &self.unavailable,
-            self.show_hidden,
-        );
+        let view = NavView {
+            expanded: self.expanded.as_deref(),
+            expanded_section: self.expanded_section.as_deref(),
+            hidden: &self.hidden,
+            unavailable: &self.unavailable,
+            show_hidden: self.show_hidden,
+        };
+        self.entries = view.flatten(&self.tree);
         if self.entries.is_empty() {
             self.selected = 0;
             self.row_offset = 0;
@@ -311,24 +461,58 @@ impl NavState {
         self.show_hidden
     }
 
+    /// Ids the hidden set records for `id`: the id itself, or every screen
+    /// of a section (sections are layout only and never stored).
+    fn hide_targets(&self, id: &str) -> Vec<String> {
+        if is_section(&self.tree, id) {
+            find(&self.tree, id).map_or_else(Vec::new, |section| {
+                leaves(section)
+                    .into_iter()
+                    .map(|leaf| leaf.id.clone())
+                    .collect()
+            })
+        } else {
+            vec![id.to_string()]
+        }
+    }
+
+    /// Whether `id` (screen, section or category) is currently hidden.
+    fn is_hidden(&self, id: &str) -> bool {
+        let targets = self.hide_targets(id);
+        !targets.is_empty() && targets.iter().all(|target| self.hidden.contains(target))
+    }
+
+    /// Hidden set after hiding `id`, with the category folding rules applied.
+    fn hidden_after_hiding(&self, id: &str) -> HashSet<String> {
+        let mut next = self.hidden.clone();
+        for target in self.hide_targets(id) {
+            next.insert(target);
+        }
+        subsume_hidden_children(&self.tree, &mut next, id);
+        collapse_empty_groups(&self.tree, &mut next);
+        next
+    }
+
     /// Hide or restore `id`. Restoring a child whose parent group is hidden
     /// restores the group instead. Hiding a category clears any previously
     /// hidden children so one restore brings the whole menu back. Hiding the
     /// last remaining child of a category also hides that category. After a
     /// hide, the cursor moves to the next remaining row, or the previous one
-    /// if this was the last.
+    /// if this was the last. A section hides or restores all its screens.
     pub fn toggle_hidden(&mut self, id: &str) -> ToggleHidden {
-        if self.hidden.contains(id) {
-            self.hidden.remove(id);
+        if let Some(group) = self
+            .top_level_of(id)
+            .filter(|group| *group != id && self.hidden.contains(*group))
+        {
+            let group = group.to_string();
+            self.hidden.remove(&group);
             self.rebuild();
             return ToggleHidden::Restored;
         }
-        if let Some(parent) = self
-            .parent_of(id)
-            .filter(|parent| self.hidden.contains(*parent))
-        {
-            let parent = parent.to_string();
-            self.hidden.remove(&parent);
+        if self.is_hidden(id) {
+            for target in self.hide_targets(id) {
+                self.hidden.remove(&target);
+            }
             self.rebuild();
             return ToggleHidden::Restored;
         }
@@ -346,10 +530,7 @@ impl NavState {
                 .map(|entry| entry.id.clone())
                 .collect()
         });
-        let mut next = self.hidden.clone();
-        next.insert(id.to_string());
-        subsume_hidden_children(&self.tree, &mut next, id);
-        collapse_empty_groups(&self.tree, &mut next);
+        let next = self.hidden_after_hiding(id);
         if visible_leaf_count(&self.tree, &next, &self.unavailable) == 0 {
             return ToggleHidden::LastVisible;
         }
@@ -359,8 +540,16 @@ impl NavState {
             .is_some_and(|expanded| next.contains(expanded))
         {
             self.expanded = None;
+            self.expanded_section = None;
         }
         self.hidden = next;
+        if self
+            .expanded_section
+            .clone()
+            .is_some_and(|section| self.is_hidden(&section))
+        {
+            self.expanded_section = None;
+        }
         self.rebuild();
         self.select_remaining(&following, &preceding);
         ToggleHidden::Hidden
@@ -377,47 +566,36 @@ impl NavState {
 
     #[must_use]
     pub fn would_hide_last_leaf(&self, id: &str) -> bool {
-        if self.hidden.contains(id) {
+        if self.is_hidden(id) {
             return false;
         }
-        let mut next = self.hidden.clone();
-        next.insert(id.to_string());
-        subsume_hidden_children(&self.tree, &mut next, id);
-        collapse_empty_groups(&self.tree, &mut next);
+        let next = self.hidden_after_hiding(id);
         visible_leaf_count(&self.tree, &next, &self.unavailable) == 0
     }
 
-    /// Parent category that would also hide if `id` is its last visible child.
+    /// Category that would also hide if `id` holds its last visible screens.
     #[must_use]
     pub fn hide_collapses_parent(&self, id: &str) -> Option<&str> {
-        let parent_id = self.parent_of(id)?;
-        if self.hidden.contains(parent_id) {
+        let group_id = self.top_level_of(id).filter(|group| *group != id)?;
+        if self.hidden.contains(group_id) {
             return None;
         }
-        let parent = self.tree.iter().find(|item| item.id == parent_id)?;
-        let remaining = parent
-            .children
-            .iter()
-            .filter(|child| {
-                child.id != id
-                    && !self.hidden.contains(&child.id)
-                    && !self.unavailable.contains_key(&child.id)
+        let group = find(&self.tree, group_id)?;
+        let targets = self.hide_targets(id);
+        let remaining = leaves(group)
+            .into_iter()
+            .filter(|leaf| {
+                !targets.contains(&leaf.id)
+                    && !self.hidden.contains(&leaf.id)
+                    && !self.unavailable.contains_key(&leaf.id)
             })
             .count();
-        (remaining == 0).then_some(parent_id)
+        (remaining == 0).then_some(group_id)
     }
 
     #[must_use]
     pub fn label_of(&self, id: &str) -> Option<&str> {
-        for item in &self.tree {
-            if item.id == id {
-                return Some(item.label.as_str());
-            }
-            if let Some(child) = item.children.iter().find(|child| child.id == id) {
-                return Some(child.label.as_str());
-            }
-        }
-        None
+        find(&self.tree, id).map(|item| item.label.as_str())
     }
 
     /// First leaf that remains after hiding, used as the post-connect landing.
@@ -427,15 +605,11 @@ impl NavState {
             if self.omitted_from_nav(&item.id) {
                 continue;
             }
-            if item.children.is_empty() {
-                return Some(item.id.clone());
-            }
-            if let Some(child) = item
-                .children
-                .iter()
-                .find(|child| !self.omitted_from_nav(&child.id))
+            if let Some(leaf) = leaves(item)
+                .into_iter()
+                .find(|leaf| !self.omitted_from_nav(&leaf.id))
             {
-                return Some(child.id.clone());
+                return Some(leaf.id.clone());
             }
         }
         None
@@ -445,76 +619,45 @@ impl NavState {
         self.unavailable.contains_key(id) || (!self.show_hidden && self.hidden.contains(id))
     }
 
-    fn parent_of(&self, id: &str) -> Option<&str> {
-        self.tree.iter().find_map(|item| {
-            item.children
-                .iter()
-                .any(|child| child.id == id)
-                .then_some(item.id.as_str())
-        })
+    fn top_level_of(&self, id: &str) -> Option<&str> {
+        path_to(&self.tree, id).and_then(|path| path.first().map(|item| item.id.as_str()))
     }
 
     /// Select `id`, expanding its category (and collapsing others) so the
-    /// matching row is visible. Group ids select that group's first child.
+    /// matching row is visible. Group and section ids select their first
+    /// visible screen.
     pub fn select_id(&mut self, id: &str) -> bool {
-        if self.unavailable.contains_key(id)
-            || self
-                .parent_of(id)
-                .is_some_and(|parent| self.unavailable.contains_key(parent))
-        {
-            return false;
-        }
-        let Some(target) = self.reveal_target(id) else {
+        let Some(path) = path_to(&self.tree, id) else {
             return false;
         };
-        self.expanded.clone_from(&target.expanded);
-        self.rebuild();
-        match self
-            .entries
+        if path
             .iter()
-            .position(|entry| entry.id == target.selected)
+            .any(|item| self.unavailable.contains_key(&item.id))
         {
-            Some(idx) => {
-                self.selected = idx;
-                true
-            }
-            None => false,
+            return false;
         }
-    }
-
-    fn reveal_target(&self, id: &str) -> Option<RevealTarget> {
-        for item in &self.tree {
-            if item.id != id {
-                continue;
-            }
-            if item.children.is_empty() {
-                return Some(RevealTarget {
-                    selected: item.id.clone(),
-                    expanded: None,
-                });
-            }
-            let selected = item
-                .children
-                .iter()
-                .find(|child| {
-                    !self.unavailable.contains_key(&child.id)
-                        && (self.show_hidden || !self.hidden.contains(&child.id))
-                })
-                .map(|child| child.id.clone())?;
-            return Some(RevealTarget {
-                selected,
-                expanded: Some(item.id.clone()),
-            });
-        }
-        for item in &self.tree {
-            if item.children.iter().any(|child| child.id == id) {
-                return Some(RevealTarget {
-                    selected: id.to_string(),
-                    expanded: Some(item.id.clone()),
-                });
-            }
-        }
-        None
+        let target = path[path.len() - 1];
+        let leaf = if target.children.is_empty() {
+            target
+        } else {
+            let Some(leaf) = leaves(target).into_iter().find(|leaf| {
+                !self.unavailable.contains_key(&leaf.id)
+                    && (self.show_hidden || !self.hidden.contains(&leaf.id))
+            }) else {
+                return false;
+            };
+            leaf
+        };
+        let Some(leaf_path) = path_to(&self.tree, &leaf.id) else {
+            return false;
+        };
+        let leaf_id = leaf.id.clone();
+        let expanded = (leaf_path.len() > 1).then(|| leaf_path[0].id.clone());
+        let expanded_section = (leaf_path.len() > 2).then(|| leaf_path[1].id.clone());
+        self.expanded = expanded;
+        self.expanded_section = expanded_section;
+        self.rebuild();
+        self.focus_row(&leaf_id)
     }
 
     /// Build styled lines for every visible row.
@@ -663,7 +806,7 @@ fn nav_row_line(
         .as_deref()
         .map(|package| format!(" !{package}"))
         .unwrap_or_default();
-    let body = format!("{chevron}{indent}{mark}{}{badge}", entry.label);
+    let body = format!("{indent}{chevron}{mark}{}{badge}", entry.label);
     let body_style = if entry.hidden {
         let base = if is_viewed {
             styles.text
@@ -689,11 +832,6 @@ fn nav_row_line(
     } else {
         line
     }
-}
-
-struct RevealTarget {
-    selected: String,
-    expanded: Option<String>,
 }
 
 #[cfg(test)]
@@ -1225,5 +1363,203 @@ mod render_tests {
         assert_eq!(lines.len(), 1);
         assert!(line_text(&lines[0]).contains("Item 11"));
         assert!(!line_text(&lines[0]).contains('▲'));
+    }
+}
+
+#[cfg(test)]
+mod section_tests {
+    use super::*;
+
+    fn leaf(id: &str, label: &str) -> NavItem {
+        NavItem {
+            id: id.into(),
+            label: label.into(),
+            children: vec![],
+        }
+    }
+
+    fn sectioned() -> Vec<NavItem> {
+        vec![
+            leaf("dashboard", "Dashboard"),
+            NavItem {
+                id: "ip-group".into(),
+                label: "IP".into(),
+                children: vec![
+                    leaf("addresses", "Addresses"),
+                    NavItem {
+                        id: "ip-group/firewall".into(),
+                        label: "Firewall".into(),
+                        children: vec![
+                            leaf("firewall-filter", "Filter Rules"),
+                            leaf("firewall-nat", "NAT"),
+                        ],
+                    },
+                    leaf("routes", "Routes"),
+                ],
+            },
+        ]
+    }
+
+    fn flat() -> Vec<NavItem> {
+        vec![
+            leaf("dashboard", "Dashboard"),
+            NavItem {
+                id: "ip-group".into(),
+                label: "IP".into(),
+                children: vec![
+                    leaf("addresses", "Addresses"),
+                    leaf("firewall-filter", "Firewall › Filter Rules"),
+                    leaf("firewall-nat", "Firewall › NAT"),
+                    leaf("routes", "Routes"),
+                ],
+            },
+        ]
+    }
+
+    fn ids(state: &NavState) -> Vec<&str> {
+        state.entries.iter().map(|e| e.id.as_str()).collect()
+    }
+
+    #[test]
+    fn opening_a_category_shows_sections_collapsed() {
+        let mut state = NavState::new(&sectioned());
+        assert!(state.select_id("ip-group"));
+        assert_eq!(state.selected_id(), Some("addresses"));
+        assert_eq!(
+            ids(&state),
+            [
+                "dashboard",
+                "ip-group",
+                "addresses",
+                "ip-group/firewall",
+                "routes"
+            ]
+        );
+        let section = &state.entries[3];
+        assert!(section.is_group);
+        assert_eq!(section.depth, 1);
+        assert!(!section.expanded);
+    }
+
+    #[test]
+    fn entering_a_section_expands_it_and_selects_its_first_screen() {
+        let mut state = NavState::new(&sectioned());
+        assert!(state.select_id("ip-group/firewall"));
+        assert_eq!(state.selected_id(), Some("firewall-filter"));
+        assert_eq!(state.expanded.as_deref(), Some("ip-group"));
+        assert_eq!(state.expanded_section.as_deref(), Some("ip-group/firewall"));
+        let nat = state
+            .entries
+            .iter()
+            .find(|e| e.id == "firewall-nat")
+            .expect("nat row");
+        assert_eq!(nat.depth, 2);
+    }
+
+    #[test]
+    fn select_id_reveals_a_screen_inside_a_section() {
+        let mut state = NavState::new(&sectioned());
+        assert!(state.select_id("firewall-nat"));
+        assert_eq!(state.selected_id(), Some("firewall-nat"));
+        assert_eq!(state.expanded_section.as_deref(), Some("ip-group/firewall"));
+        assert!(state.select_id("routes"));
+        assert!(state.expanded_section.is_none());
+        assert!(state.entries.iter().all(|e| e.id != "firewall-nat"));
+    }
+
+    #[test]
+    fn hiding_a_section_stores_only_its_screens() {
+        let mut state = NavState::new(&sectioned());
+        state.select_id("ip-group");
+        assert_eq!(
+            state.toggle_hidden("ip-group/firewall"),
+            ToggleHidden::Hidden
+        );
+        let mut hidden: Vec<&str> = state.hidden.iter().map(String::as_str).collect();
+        hidden.sort_unstable();
+        assert_eq!(hidden, ["firewall-filter", "firewall-nat"]);
+        assert!(state.entries.iter().all(|e| e.id != "ip-group/firewall"));
+
+        state.set_show_hidden(true);
+        let row = state
+            .entries
+            .iter()
+            .find(|e| e.id == "ip-group/firewall")
+            .expect("hidden section listed");
+        assert!(row.hidden);
+        assert_eq!(
+            state.toggle_hidden("ip-group/firewall"),
+            ToggleHidden::Restored
+        );
+        assert!(state.hidden.is_empty());
+    }
+
+    #[test]
+    fn hiding_every_screen_through_sections_tucks_the_category() {
+        let mut state = NavState::new(&sectioned());
+        state.select_id("ip-group");
+        state.toggle_hidden("addresses");
+        state.toggle_hidden("routes");
+        assert_eq!(
+            state.hide_collapses_parent("ip-group/firewall"),
+            Some("ip-group")
+        );
+        // Dashboard still remains, so this is not the last screen.
+        assert!(!state.would_hide_last_leaf("ip-group/firewall"));
+        assert_eq!(
+            state.toggle_hidden("ip-group/firewall"),
+            ToggleHidden::Hidden
+        );
+        assert!(state.hidden.contains("ip-group"));
+        assert!(state.entries.iter().all(|e| e.id != "ip-group"));
+    }
+
+    #[test]
+    fn switching_layouts_keeps_the_cursor_and_hidden_screens() {
+        let mut state = NavState::new(&flat());
+        state.select_id("firewall-nat");
+        state.toggle_hidden("routes");
+
+        state.set_tree(&sectioned());
+        assert_eq!(state.selected_id(), Some("firewall-nat"));
+        assert_eq!(state.expanded_section.as_deref(), Some("ip-group/firewall"));
+        assert!(state.hidden.contains("routes"));
+        assert!(state.entries.iter().all(|e| e.id != "routes"));
+
+        state.set_tree(&flat());
+        assert_eq!(state.selected_id(), Some("firewall-nat"));
+        assert!(state.expanded_section.is_none());
+    }
+
+    #[test]
+    fn switching_from_a_section_row_lands_on_its_category() {
+        let mut state = NavState::new(&sectioned());
+        state.select_id("ip-group");
+        let idx = state
+            .entries
+            .iter()
+            .position(|e| e.id == "ip-group/firewall")
+            .expect("section");
+        state.selected = idx;
+        state.set_tree(&flat());
+        assert_eq!(state.selected_id(), Some("ip-group"));
+    }
+
+    #[test]
+    fn section_rows_indent_their_chevron_and_screens() {
+        use mtui_core::{DefaultTheme, Theme};
+        let styles = Styles::from_palette(DefaultTheme::new().palette());
+        let mut state = NavState::new(&sectioned());
+        state.select_id("firewall-nat");
+        let lines: Vec<String> = state
+            .render_lines(false, None, &styles, 30)
+            .iter()
+            .map(crate::layout::line_plain)
+            .collect();
+        assert!(
+            lines.iter().any(|l| l.starts_with("  ▾ Firewall")),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.starts_with("    NAT")), "{lines:?}");
     }
 }

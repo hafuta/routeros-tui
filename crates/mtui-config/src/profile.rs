@@ -28,6 +28,13 @@ pub const THEME_PREFERENCE_KEY: &str = "theme";
 /// Value is a comma-separated list of navigation ids (groups or resources).
 pub const HIDDEN_NAV_PREFERENCE_KEY: &str = "hidden_nav";
 
+/// Preference key for the sidebar layout. `"sections"` nests related screens
+/// under a third level (IP › Firewall › NAT); absent means the flat
+/// two-level layout.
+pub const NAV_LAYOUT_PREFERENCE_KEY: &str = "nav_layout";
+
+const NAV_LAYOUT_SECTIONS: &str = "sections";
+
 /// Per-profile UI preferences. String values keep the on-disk format stable
 /// while letting the UI add new preferences without a schema migration.
 ///
@@ -36,6 +43,8 @@ pub const HIDDEN_NAV_PREFERENCE_KEY: &str = "hidden_nav";
 ///   profile (e.g. `"default"`).
 /// - [`HIDDEN_NAV_PREFERENCE_KEY`] (`"hidden_nav"`): comma-separated nav ids
 ///   to omit from the sidebar until the operator reveals them.
+/// - [`NAV_LAYOUT_PREFERENCE_KEY`] (`"nav_layout"`): `"sections"` for the
+///   three-level sidebar.
 pub type Preferences = HashMap<String, String>;
 
 fn default_remember_password() -> bool {
@@ -128,6 +137,27 @@ impl Profile {
         } else {
             self.preferences
                 .insert(HIDDEN_NAV_PREFERENCE_KEY.to_string(), ids.join(","));
+        }
+    }
+
+    /// Whether the sidebar nests screens under sections. See
+    /// [`NAV_LAYOUT_PREFERENCE_KEY`].
+    #[must_use]
+    pub fn nav_sections(&self) -> bool {
+        self.preferences
+            .get(NAV_LAYOUT_PREFERENCE_KEY)
+            .is_some_and(|value| value == NAV_LAYOUT_SECTIONS)
+    }
+
+    /// Stores the sidebar layout. The flat default removes the key.
+    pub fn set_nav_sections(&mut self, sections: bool) {
+        if sections {
+            self.preferences.insert(
+                NAV_LAYOUT_PREFERENCE_KEY.to_string(),
+                NAV_LAYOUT_SECTIONS.to_string(),
+            );
+        } else {
+            self.preferences.remove(NAV_LAYOUT_PREFERENCE_KEY);
         }
     }
 
@@ -466,6 +496,24 @@ mod tests {
         let store = ProfileStore::new(dir.path());
         let err = store.load().unwrap_err();
         assert!(matches!(err, ConfigError::UnsupportedVersion { .. }));
+    }
+
+    #[test]
+    fn nav_sections_roundtrips_and_defaults_off() {
+        let mut profile = Profile::default();
+        assert!(!profile.nav_sections());
+        profile.set_nav_sections(true);
+        assert!(profile.nav_sections());
+        assert_eq!(
+            profile
+                .preferences
+                .get(NAV_LAYOUT_PREFERENCE_KEY)
+                .map(String::as_str),
+            Some("sections")
+        );
+        profile.set_nav_sections(false);
+        assert!(!profile.nav_sections());
+        assert!(!profile.preferences.contains_key(NAV_LAYOUT_PREFERENCE_KEY));
     }
 
     #[test]

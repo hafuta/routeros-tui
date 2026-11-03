@@ -34,7 +34,7 @@ pub use logging::{LOG_FILE_NAME, init_file_logging, shared_log_store};
 pub use paths::expand_user_path;
 pub use paths::{APPLICATION, LEGACY_APPLICATION, config_dir, state_dir};
 pub use profile::{
-    HIDDEN_NAV_PREFERENCE_KEY, PROFILE_FILE_NAME, Preferences, Profile, ProfileStore,
-    THEME_PREFERENCE_KEY,
+    HIDDEN_NAV_PREFERENCE_KEY, NAV_LAYOUT_PREFERENCE_KEY, PROFILE_FILE_NAME, Preferences, Profile,
+    ProfileStore, THEME_PREFERENCE_KEY,
 };
 pub use redact::redact;

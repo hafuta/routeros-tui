@@ -12,6 +12,8 @@
 //! and are appended after the listed ones, so a new screen still shows up
 //! before it is placed here.
 
+use crate::resources::NavItem;
+
 /// One nav row: resource id and the label shown for it.
 pub type NavEntry = (&'static str, &'static str);
 
@@ -33,6 +35,63 @@ pub fn group_layout(group: &str) -> Option<&'static [NavEntry]> {
         .iter()
         .find(|(id, _)| *id == group)
         .map(|(_, entries)| *entries)
+}
+
+/// Separator between a section and the screen inside it.
+const SECTION_SEPARATOR: &str = " › ";
+
+/// Fold a group's children into sections for the three-level layout.
+///
+/// `Section › Tab` labels become a `Section` row holding `Tab`. A screen
+/// whose label equals a section name (DHCP Server, DNS, `WiFi`) is that
+/// section's first screen. Screens without a section stay direct children.
+/// Section ids are `<group>/<slug>` and never collide with resource ids.
+#[must_use]
+pub fn into_sections(group: &str, children: Vec<NavItem>) -> Vec<NavItem> {
+    let sections: Vec<String> = children
+        .iter()
+        .filter_map(|child| child.label.split_once(SECTION_SEPARATOR))
+        .map(|(section, _)| section.to_string())
+        .collect();
+    let mut out: Vec<NavItem> = Vec::new();
+    for child in children {
+        let (section, label) = match child.label.split_once(SECTION_SEPARATOR) {
+            Some((section, tab)) => (Some(section.to_string()), tab.to_string()),
+            None if sections.contains(&child.label) => {
+                (Some(child.label.clone()), child.label.clone())
+            }
+            None => (None, child.label.clone()),
+        };
+        let leaf = NavItem {
+            id: child.id,
+            label,
+            children: Vec::new(),
+        };
+        let Some(section) = section else {
+            out.push(leaf);
+            continue;
+        };
+        let id = format!("{group}/{}", section_slug(&section));
+        if let Some(existing) = out.iter_mut().find(|item| item.id == id) {
+            existing.children.push(leaf);
+        } else {
+            out.push(NavItem {
+                id,
+                label: section,
+                children: vec![leaf],
+            });
+        }
+    }
+    out
+}
+
+fn section_slug(section: &str) -> String {
+    section
+        .to_ascii_lowercase()
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 const INTERFACES: &[NavEntry] = &[
@@ -273,7 +332,7 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
-    use crate::resources::{ALL_RESOURCES, NAVIGATION, navigation_tree};
+    use crate::resources::{ALL_RESOURCES, NAVIGATION, navigation_tree, navigation_tree_sectioned};
 
     /// Longest label that fits a child row in the medium layout (28-column
     /// nav pane minus border and child indent).
@@ -351,5 +410,68 @@ mod tests {
         let leases = labels.iter().position(|l| *l == "DHCP Server › Leases");
         let server = labels.iter().position(|l| *l == "DHCP Server");
         assert!(server < leases, "{labels:?}");
+    }
+
+    #[test]
+    fn sectioned_tree_nests_ip_menus_three_levels_deep() {
+        let tree = navigation_tree_sectioned();
+        let ip = tree.iter().find(|item| item.id == "ip-group").expect("ip");
+        let firewall = ip
+            .children
+            .iter()
+            .find(|item| item.id == "ip-group/firewall")
+            .expect("firewall section");
+        assert_eq!(firewall.label, "Firewall");
+        let tabs: Vec<&str> = firewall.children.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(tabs[..2], ["Filter Rules", "NAT"]);
+        assert_eq!(firewall.children[0].id, "firewall-filter");
+
+        let dhcp = ip
+            .children
+            .iter()
+            .find(|item| item.id == "ip-group/dhcp-server")
+            .expect("dhcp server section");
+        assert_eq!(dhcp.children[0].id, "dhcp-servers");
+        assert_eq!(dhcp.children[0].label, "DHCP Server");
+        assert!(
+            dhcp.children
+                .iter()
+                .any(|c| c.id == "dhcp-leases" && c.label == "Leases")
+        );
+
+        let addresses = ip
+            .children
+            .iter()
+            .find(|c| c.id == "addresses")
+            .expect("leaf");
+        assert!(addresses.children.is_empty());
+    }
+
+    #[test]
+    fn sectioned_tree_keeps_every_resource_once() {
+        let flat: Vec<String> = navigation_tree()
+            .iter()
+            .flat_map(|group| group.children.iter().map(|c| c.id.clone()))
+            .collect();
+        let mut nested = Vec::new();
+        for group in navigation_tree_sectioned() {
+            for child in group.children {
+                if child.children.is_empty() {
+                    nested.push(child.id);
+                } else {
+                    assert!(child.id.contains('/'), "section id {}", child.id);
+                    assert!(resource_by_id_opt(&child.id).is_none());
+                    nested.extend(child.children.into_iter().map(|leaf| leaf.id));
+                }
+            }
+        }
+        let mut flat_sorted = flat.clone();
+        flat_sorted.sort();
+        nested.sort();
+        assert_eq!(flat_sorted, nested);
+    }
+
+    fn resource_by_id_opt(id: &str) -> Option<&'static crate::resources::ResourceSpec> {
+        crate::resources::resource_by_id(id)
     }
 }

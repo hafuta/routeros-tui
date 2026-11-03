@@ -101,6 +101,7 @@ fn push_main_help(out: &mut String, app: &App) {
                 ("enter", "open category or page"),
                 ("-", "hide or restore this menu"),
                 (".", "show user-hidden menus"),
+                ("=", "toggle nested menu sections"),
             ],
         );
     }

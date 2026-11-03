@@ -416,6 +416,10 @@ impl App {
                 self.toggle_show_hidden_menus();
                 return Vec::new();
             }
+            KeyCode::Char('=') if self.pane == Pane::Nav && !self.status.starts_with("Filter:") => {
+                self.toggle_nav_sections();
+                return Vec::new();
+            }
             KeyCode::Char('-') if self.pane == Pane::Nav && !self.status.starts_with("Filter:") => {
                 self.toggle_selected_nav_hidden();
                 return Vec::new();
@@ -1620,6 +1624,10 @@ impl App {
                 self.reset_hidden_menus();
                 Vec::new()
             }
+            "toggle-nav-sections" => {
+                self.toggle_nav_sections();
+                Vec::new()
+            }
             "dashboard" => self.open_resource(DASHBOARD_ID),
             "safe-mode" => self.toggle_safe_mode(),
             "safe-mode-unroll" => self.unroll_safe_mode(),
@@ -2547,6 +2555,35 @@ mod nav_accordion_tests {
         app.nav.set_hidden_ids(Vec::new());
         app.nav.set_show_hidden(false);
         app
+    }
+
+    #[test]
+    fn equals_toggles_nested_sections_and_enter_opens_a_section() {
+        let mut app = main_app();
+        let _ = app.update(AppEvent::Input(press(KeyCode::Char('='))));
+        assert!(app.nav_sections);
+        assert!(app.status.contains("nested"), "{}", app.status);
+
+        assert!(app.nav.select_id("ip-group"));
+        let firewall = app
+            .nav
+            .entries
+            .iter()
+            .position(|entry| entry.id == "ip-group/firewall")
+            .expect("firewall section");
+        app.nav.selected = firewall;
+        let _ = app.update(AppEvent::Input(press(KeyCode::Enter)));
+        assert_eq!(app.current_resource, "firewall-filter");
+        assert_eq!(
+            app.nav.expanded_section.as_deref(),
+            Some("ip-group/firewall")
+        );
+
+        app.pane = Pane::Nav;
+        let _ = app.update(AppEvent::Input(press(KeyCode::Char('='))));
+        assert!(!app.nav_sections);
+        assert_eq!(app.nav.selected_id(), Some("firewall-filter"));
+        assert!(app.nav.entries.iter().all(|entry| !entry.id.contains('/')));
     }
 
     #[test]
