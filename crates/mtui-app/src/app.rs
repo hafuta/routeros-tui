@@ -6,13 +6,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use mtui_config::{
-    Credential, CredentialStore, EnvOverrides, LogLevel, LogRecord, LogStore,
+    Credential, CredentialStore, EnvOverrides, LogLevel, LogRecord, LogStore, NavLayout,
     PlatformCredentialStore, Profile, ProfileStore, read_ca_file, shared_log_store,
 };
 use mtui_core::{
     ALL_RESOURCES, DASHBOARD_ID, MISSING_PATH_REASON, ResourceSpec, ThemeRegistry, ThemeSet,
     edit_resource_for_interface_type, installed_package_names, is_missing_command_prefix,
-    merge_unavailable_menus, resource_by_id, unavailable_menus_for_device,
+    merge_unavailable_menus, navigation_tree, navigation_tree_sectioned, resource_by_id,
+    unavailable_menus_for_device,
 };
 
 use mtui_routeros::{
@@ -685,6 +686,7 @@ impl App {
             self.theme = ThemeSet::from_theme(self.themes.active().as_ref());
         }
         self.nav.set_hidden_ids(profile.hidden_nav_ids());
+        self.apply_nav_layout(profile.nav_layout());
         self.rebuild_palette();
         if profile.certificate_fingerprint.is_empty() {
             self.saved_fingerprint = None;
@@ -1110,6 +1112,7 @@ impl App {
         self.login.uses_totp = profile.uses_totp;
         profile.set_theme_id(self.theme.id.as_str());
         profile.set_hidden_nav_ids(self.nav.hidden.iter().cloned());
+        profile.set_nav_layout(self.nav_layout);
         if self.profiles.upsert(profile).is_err() {
             self.status = "Connected · profile could not be saved".into();
             return;
@@ -2607,6 +2610,68 @@ impl App {
         }
     }
 
+    /// Switch the sidebar layout (flat, nested sections, or section tabs).
+    fn apply_nav_layout(&mut self, layout: NavLayout) {
+        self.nav_layout = layout;
+        let tree = if layout == NavLayout::Flat {
+            navigation_tree()
+        } else {
+            navigation_tree_sectioned()
+        };
+        let on_open_row = self.nav.selected_id() == Some(self.nav.row_for(&self.current_resource));
+        self.nav.set_layout(&tree, layout == NavLayout::Tabs);
+        if on_open_row {
+            let current = self.current_resource.clone();
+            let _ = self.nav.select_id(&current);
+        }
+    }
+
+    /// Cycle flat → nested sections → tabs and remember it for this profile.
+    pub(crate) fn cycle_nav_layout(&mut self) {
+        self.apply_nav_layout(self.nav_layout.next());
+        let name = match self.nav_layout {
+            NavLayout::Flat => "flat",
+            NavLayout::Sections => "nested sections",
+            NavLayout::Tabs => "section tabs (< > switch)",
+        };
+        self.status = format!("Menu: {name} · = next layout");
+        if cfg!(test) {
+            return;
+        }
+        let Some(mut profile) = self.named_profile() else {
+            return;
+        };
+        profile.set_nav_layout(self.nav_layout);
+        let _ = self.profiles.upsert(profile);
+    }
+
+    /// Screen a sidebar row opens: a section row (tab layout) opens the tab
+    /// already on screen when it belongs to that section, else its first tab.
+    pub(crate) fn nav_open_target(&self, row: &str) -> Option<String> {
+        if self.nav.row_for(&self.current_resource) == row && self.current_resource != row {
+            return Some(self.current_resource.clone());
+        }
+        self.nav.open_target(row)
+    }
+
+    /// Move to the previous or next tab of the current section (tab layout).
+    pub(crate) fn switch_content_tab(&mut self, delta: isize) -> Vec<AppCommand> {
+        let Some(tabs) = self.nav.tabs_for(&self.current_resource) else {
+            return Vec::new();
+        };
+        let Some(idx) = tabs.iter().position(|(id, _)| *id == self.current_resource) else {
+            return Vec::new();
+        };
+        let len = isize::try_from(tabs.len()).unwrap_or(1);
+        let idx = isize::try_from(idx).unwrap_or(0);
+        let next = usize::try_from((idx + delta).rem_euclid(len)).unwrap_or(0);
+        let id = tabs[next].0.clone();
+        if id == self.current_resource {
+            return Vec::new();
+        }
+        self.open_resource(&id)
+    }
+
     pub(crate) fn reset_hidden_menus(&mut self) {
         self.nav.set_hidden_ids(Vec::new());
         self.nav.set_show_hidden(false);
@@ -2648,6 +2713,8 @@ fn palette_commands_filtered(
             .with_description("reveal tucked-away sidebar items so they can be restored"),
         Command::new("reset-hidden-menus", "Restore all menus")
             .with_description("put every hidden sidebar item back"),
+        Command::new("cycle-nav-layout", "Cycle menu layout")
+            .with_description("flat, nested sections (IP › Firewall › NAT), or section tabs"),
         Command::new("dashboard", "Dashboard").with_description("live WAN overview"),
         Command::new("safe-mode", "Toggle Safe Mode").with_description(
             "take or release Safe Mode on this tab so a dropped session unrolls edits",

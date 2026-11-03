@@ -4,7 +4,7 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
-use mtui_core::{DASHBOARD_ID, SafeModeStatus, SessionAccess, navigation_tree};
+use mtui_core::{DASHBOARD_ID, SafeModeStatus, SessionAccess, navigation_tree_sectioned};
 use mtui_routeros::{Client, Resource};
 use mtui_ui::{
     CommandPalette, ConsoleEntry, ConsoleState, FormSession, InspectorState, LoginForm, NavState,
@@ -112,8 +112,17 @@ pub struct Session {
     pub(crate) last_safe_mode_verb: Option<SafeModeVerb>,
     pub(crate) safe_mode_after: SafeModeAfter,
     pub(crate) installed_packages: HashSet<String>,
+    /// Sidebar layout: flat, nested sections, or section tabs.
+    pub(crate) nav_layout: mtui_config::NavLayout,
     pub(crate) missing_path_ids: HashSet<String>,
     pub(crate) menu_paths_generation: u64,
+}
+
+/// Sidebar in the default layout: section rows whose screens open as tabs.
+fn default_nav() -> NavState {
+    let mut nav = NavState::new(&[]);
+    nav.set_layout(&navigation_tree_sectioned(), true);
+    nav
 }
 
 impl Session {
@@ -122,7 +131,7 @@ impl Session {
             id,
             screen: Screen::Login,
             login: LoginForm::default(),
-            nav: NavState::new(&navigation_tree()),
+            nav: default_nav(),
             pane: Pane::Nav,
             overlay: Overlay::None,
             overlay_scroll: 0,
@@ -180,6 +189,7 @@ impl Session {
             last_safe_mode_verb: None,
             safe_mode_after: SafeModeAfter::None,
             installed_packages: HashSet::new(),
+            nav_layout: mtui_config::NavLayout::default(),
             missing_path_ids: HashSet::new(),
             menu_paths_generation: 0,
         }

@@ -360,6 +360,9 @@ impl App {
             hints.push(("space".into(), "check".into()));
             hints.push(("*".into(), "all".into()));
         }
+        if self.nav.tabs_for(&self.current_resource).is_some() {
+            hints.push(("< >".into(), "tabs".into()));
+        }
         hints.push(("F12".into(), "terminal".into()));
         hints.push(("r".into(), "refresh".into()));
         hints.push(("ctrl+t".into(), "tab".into()));

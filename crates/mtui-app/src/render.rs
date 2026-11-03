@@ -388,7 +388,12 @@ fn draw_main(frame: &mut Frame<'_>, area: Rect, app: &App) {
             draw_nav(frame, panes[idx], app);
             idx += 1;
         }
-        let content = panes[idx];
+        let mut content = panes[idx];
+        if app.current_resource != DASHBOARD_ID
+            && let Some(tabs) = app.nav.tabs_for(&app.current_resource)
+        {
+            content = draw_content_tabs(frame, content, app, &tabs);
+        }
         if app.current_resource == DASHBOARD_ID {
             draw_dashboard(frame, content, app);
         } else if let Some(session) = &app.page_form {
@@ -467,6 +472,34 @@ fn draw_console(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Draw the section tab strip at the top of `area` and return the rest.
+fn draw_content_tabs(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    tabs: &[(String, String)],
+) -> Rect {
+    if area.height < 4 {
+        return area;
+    }
+    let styles = app.styles();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(1)])
+        .split(area);
+    let block = Block::default().padding(Padding::new(2, 2, 1, 0));
+    let inner = block.inner(chunks[0]);
+    frame.render_widget(block, chunks[0]);
+    let line = mtui_ui::content_tab_line(
+        tabs,
+        &app.current_resource,
+        usize::from(inner.width),
+        &styles,
+    );
+    frame.render_widget(Paragraph::new(line), inner);
+    chunks[1]
+}
+
 fn draw_nav(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let styles = app.styles();
     let block = pane_block();
@@ -476,7 +509,7 @@ fn draw_nav(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let lines = constrain_lines(
         app.nav.render_pane(
             app.pane == Pane::Nav,
-            Some(app.current_resource.as_str()),
+            Some(app.nav.row_for(&app.current_resource)),
             &styles,
             width,
             usize::from(inner.height),

@@ -18,6 +18,7 @@ mod interface_write;
 mod ip_write;
 mod ipsec_write;
 mod ipv6_write;
+mod nav_layout;
 mod ppp_write;
 mod queue_write;
 mod radius_write;
@@ -64,7 +65,8 @@ pub use forms::{
 };
 pub use resources::{
     ALL_RESOURCES, CatalogError, ColumnSpec, DASHBOARD_ID, FetchKind, NAVIGATION, NavGroup,
-    NavItem, ResourceSpec, navigation_tree, resource_by_id, validate_active_catalog,
+    NavItem, ResourceSpec, navigation_tree, navigation_tree_sectioned, resource_by_id,
+    validate_active_catalog,
 };
 pub use routeros_version::{
     MIN_ROUTEROS_VERSION, RouterOsVersion, parse_routeros_version, routeros_meets_minimum,

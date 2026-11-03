@@ -255,15 +255,7 @@ pub fn navigation_tree() -> Vec<NavItem> {
         children: Vec::new(),
     }];
     for group in NAVIGATION {
-        let children = ALL_RESOURCES
-            .iter()
-            .filter(|spec| spec.group == group.id)
-            .map(|spec| NavItem {
-                id: spec.id.to_string(),
-                label: spec.label.to_string(),
-                children: Vec::new(),
-            })
-            .collect();
+        let children = group_children(group.id);
         items.push(NavItem {
             id: group.id.to_string(),
             label: group.label.to_string(),
@@ -271,6 +263,51 @@ pub fn navigation_tree() -> Vec<NavItem> {
         });
     }
     items
+}
+
+/// Navigation tree with a third level: related screens inside a category
+/// are grouped under section rows (IP › Firewall › NAT). See
+/// [`crate::nav_layout::into_sections`].
+#[must_use]
+pub fn navigation_tree_sectioned() -> Vec<NavItem> {
+    navigation_tree()
+        .into_iter()
+        .map(|mut item| {
+            let children = std::mem::take(&mut item.children);
+            item.children = crate::nav_layout::into_sections(&item.id, children);
+            item
+        })
+        .collect()
+}
+
+/// Children of `group`: entries from [`crate::nav_layout`] first, in layout
+/// order with layout labels, then any unlisted resource in catalog order.
+fn group_children(group: &str) -> Vec<NavItem> {
+    let specs: Vec<&ResourceSpec> = ALL_RESOURCES
+        .iter()
+        .filter(|spec| spec.group == group)
+        .collect();
+    let layout = crate::nav_layout::group_layout(group).unwrap_or(&[]);
+    let mut children: Vec<NavItem> = layout
+        .iter()
+        .filter(|(id, _)| specs.iter().any(|spec| spec.id == *id))
+        .map(|(id, label)| NavItem {
+            id: (*id).to_string(),
+            label: (*label).to_string(),
+            children: Vec::new(),
+        })
+        .collect();
+    children.extend(
+        specs
+            .iter()
+            .filter(|spec| !layout.iter().any(|(id, _)| *id == spec.id))
+            .map(|spec| NavItem {
+                id: spec.id.to_string(),
+                label: spec.label.to_string(),
+                children: Vec::new(),
+            }),
+    );
+    children
 }
 
 #[cfg(test)]
