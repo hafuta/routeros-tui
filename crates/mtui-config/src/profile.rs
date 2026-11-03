@@ -28,19 +28,19 @@ pub const THEME_PREFERENCE_KEY: &str = "theme";
 /// Value is a comma-separated list of navigation ids (groups or resources).
 pub const HIDDEN_NAV_PREFERENCE_KEY: &str = "hidden_nav";
 
-/// Preference key for the sidebar layout: `"sections"` or `"tabs"`. Absent
-/// (or unknown) means the flat two-level layout. See [`NavLayout`].
+/// Preference key for the sidebar layout: `"flat"` or `"sections"`. Absent
+/// (or unknown) means the default section tabs layout. See [`NavLayout`].
 pub const NAV_LAYOUT_PREFERENCE_KEY: &str = "nav_layout";
 
 /// How the sidebar presents related screens (IP › Firewall › NAT).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum NavLayout {
     /// Two levels; section screens carry `Section › Tab` labels.
-    #[default]
     Flat,
     /// Three levels; sections expand to their screens in the sidebar.
     Sections,
     /// Two levels; one row per section, its screens open as content tabs.
+    #[default]
     Tabs,
 }
 
@@ -57,9 +57,9 @@ impl NavLayout {
     #[must_use]
     pub fn parse(value: &str) -> Self {
         match value.trim() {
+            "flat" => Self::Flat,
             "sections" => Self::Sections,
-            "tabs" => Self::Tabs,
-            _ => Self::Flat,
+            _ => Self::Tabs,
         }
     }
 
@@ -82,8 +82,8 @@ impl NavLayout {
 ///   profile (e.g. `"default"`).
 /// - [`HIDDEN_NAV_PREFERENCE_KEY`] (`"hidden_nav"`): comma-separated nav ids
 ///   to omit from the sidebar until the operator reveals them.
-/// - [`NAV_LAYOUT_PREFERENCE_KEY`] (`"nav_layout"`): `"sections"` or
-///   `"tabs"`; see [`NavLayout`].
+/// - [`NAV_LAYOUT_PREFERENCE_KEY`] (`"nav_layout"`): `"flat"` or
+///   `"sections"`; absent means section tabs. See [`NavLayout`].
 pub type Preferences = HashMap<String, String>;
 
 fn default_remember_password() -> bool {
@@ -184,12 +184,12 @@ impl Profile {
     pub fn nav_layout(&self) -> NavLayout {
         self.preferences
             .get(NAV_LAYOUT_PREFERENCE_KEY)
-            .map_or(NavLayout::Flat, |value| NavLayout::parse(value))
+            .map_or(NavLayout::default(), |value| NavLayout::parse(value))
     }
 
-    /// Stores the sidebar layout. The flat default removes the key.
+    /// Stores the sidebar layout. The default (tabs) removes the key.
     pub fn set_nav_layout(&mut self, layout: NavLayout) {
-        if layout == NavLayout::Flat {
+        if layout == NavLayout::default() {
             self.preferences.remove(NAV_LAYOUT_PREFERENCE_KEY);
         } else {
             self.preferences.insert(
@@ -537,10 +537,10 @@ mod tests {
     }
 
     #[test]
-    fn nav_layout_roundtrips_cycles_and_defaults_flat() {
+    fn nav_layout_roundtrips_cycles_and_defaults_to_tabs() {
         let mut profile = Profile::default();
-        assert_eq!(profile.nav_layout(), NavLayout::Flat);
-        for layout in [NavLayout::Sections, NavLayout::Tabs] {
+        assert_eq!(profile.nav_layout(), NavLayout::Tabs);
+        for layout in [NavLayout::Flat, NavLayout::Sections] {
             profile.set_nav_layout(layout);
             assert_eq!(profile.nav_layout(), layout);
             assert_eq!(
@@ -551,9 +551,9 @@ mod tests {
                 Some(layout.as_str())
             );
         }
-        profile.set_nav_layout(NavLayout::Flat);
+        profile.set_nav_layout(NavLayout::Tabs);
         assert!(!profile.preferences.contains_key(NAV_LAYOUT_PREFERENCE_KEY));
-        assert_eq!(NavLayout::parse("bogus"), NavLayout::Flat);
+        assert_eq!(NavLayout::parse("bogus"), NavLayout::Tabs);
         assert_eq!(NavLayout::Flat.next(), NavLayout::Sections);
         assert_eq!(NavLayout::Sections.next(), NavLayout::Tabs);
         assert_eq!(NavLayout::Tabs.next(), NavLayout::Flat);

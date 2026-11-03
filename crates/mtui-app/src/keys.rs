@@ -2425,7 +2425,8 @@ mod palette_tests {
         assert_eq!(app.overlay, Overlay::None);
         assert!(!app.palette.visible);
         assert_eq!(app.current_resource, "firewall-filter");
-        assert_eq!(app.nav.selected_id(), Some("firewall-filter"));
+        assert_eq!(app.nav.selected_id(), Some("ip-group/firewall"));
+        assert_eq!(app.nav.row_for("firewall-filter"), "ip-group/firewall");
         assert_eq!(app.nav.expanded.as_deref(), Some("ip-group"));
         assert!(
             cmds.iter().any(|cmd| matches!(
@@ -2581,6 +2582,13 @@ mod nav_accordion_tests {
     fn equals_cycles_layouts_and_enter_opens_a_section() {
         use mtui_config::NavLayout;
         let mut app = main_app();
+        assert_eq!(app.nav_layout, NavLayout::Tabs, "tabs is the default");
+        assert!(app.nav.tabs);
+
+        let _ = app.update(AppEvent::Input(press(KeyCode::Char('='))));
+        assert_eq!(app.nav_layout, NavLayout::Flat);
+        assert!(app.nav.entries.iter().all(|entry| !entry.id.contains('/')));
+
         let _ = app.update(AppEvent::Input(press(KeyCode::Char('='))));
         assert_eq!(app.nav_layout, NavLayout::Sections);
         assert!(app.status.contains("nested"), "{}", app.status);
@@ -2592,6 +2600,7 @@ mod nav_accordion_tests {
             .iter()
             .position(|entry| entry.id == "ip-group/firewall")
             .expect("firewall section");
+        assert!(app.nav.entries[firewall].is_group);
         app.nav.selected = firewall;
         let _ = app.update(AppEvent::Input(press(KeyCode::Enter)));
         assert_eq!(app.current_resource, "firewall-filter");
@@ -2614,17 +2623,12 @@ mod nav_accordion_tests {
         let _ = app.update(AppEvent::Input(press(KeyCode::Char('='))));
         assert_eq!(app.nav_layout, NavLayout::Flat);
         assert_eq!(app.nav.selected_id(), Some("firewall-filter"));
-        assert!(app.nav.entries.iter().all(|entry| !entry.id.contains('/')));
     }
 
     #[test]
     fn tab_layout_opens_sections_and_switches_tabs() {
-        use mtui_config::NavLayout;
         let mut app = main_app();
-        for _ in 0..2 {
-            let _ = app.update(AppEvent::Input(press(KeyCode::Char('='))));
-        }
-        assert_eq!(app.nav_layout, NavLayout::Tabs);
+        assert!(app.nav.tabs);
 
         assert!(app.nav.select_id("ip-group"));
         let firewall = app
